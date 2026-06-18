@@ -2,6 +2,8 @@ import { FormEvent, useEffect, useState } from 'react'
 import './App.css'
 import { Book, supabase } from './supabase'
 
+const pageSize = 50
+
 type SearchQuery = {
   title: string
   author: string
@@ -30,6 +32,10 @@ function displayValue(value: string | number | null) {
   return value ?? '-'
 }
 
+function hasSearchCondition(search: SearchQuery) {
+  return Object.values(search).some((value) => normalize(value).length > 0)
+}
+
 function App() {
   const [titleQuery, setTitleQuery] = useState('')
   const [authorQuery, setAuthorQuery] = useState('')
@@ -42,8 +48,17 @@ function App() {
     useState<SearchQuery>(initialSearch)
   const [books, setBooks] = useState<Book[]>([])
   const [totalBooks, setTotalBooks] = useState<number | null>(null)
+  const [resultCount, setResultCount] = useState<number | null>(null)
+  const [page, setPage] = useState(0)
+  const [hasSearched, setHasSearched] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
+
+  const isFirstPage = page === 0
+  const hasNextPage = resultCount !== null && (page + 1) * pageSize < resultCount
+  const resultStart = resultCount === 0 ? 0 : page * pageSize + 1
+  const resultEnd =
+    resultCount === null ? 0 : Math.min((page + 1) * pageSize, resultCount)
 
   useEffect(() => {
     async function fetchTotalBooks() {
@@ -66,6 +81,14 @@ function App() {
     let isCurrent = true
 
     async function fetchBooks() {
+      if (!hasSearched || !hasSearchCondition(submittedSearch)) {
+        setBooks([])
+        setResultCount(null)
+        setIsLoading(false)
+        setErrorMessage(null)
+        return
+      }
+
       setIsLoading(true)
       setErrorMessage(null)
 
@@ -81,9 +104,10 @@ function App() {
         .from('books')
         .select(
           'id,title,author,translator,publisher,publication_year,isbn,series,created_at,updated_at',
+          { count: 'exact' },
         )
         .order('title', { ascending: true })
-        .limit(50)
+        .range(page * pageSize, page * pageSize + pageSize - 1)
 
       if (title) {
         query = query.ilike('title', `%${title}%`)
@@ -113,7 +137,7 @@ function App() {
         query = query.ilike('series', `%${series}%`)
       }
 
-      const { data, error } = await query
+      const { data, error, count } = await query
 
       if (!isCurrent) {
         return
@@ -121,9 +145,11 @@ function App() {
 
       if (error) {
         setBooks([])
+        setResultCount(null)
         setErrorMessage(error.message)
       } else {
         setBooks(data ?? [])
+        setResultCount(count)
       }
 
       setIsLoading(false)
@@ -134,10 +160,12 @@ function App() {
     return () => {
       isCurrent = false
     }
-  }, [submittedSearch])
+  }, [hasSearched, page, submittedSearch])
 
   function handleSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    setPage(0)
+    setHasSearched(true)
     setSubmittedSearch({
       title: titleQuery,
       author: authorQuery,
@@ -157,6 +185,10 @@ function App() {
     setPublicationYearQuery('')
     setIsbnQuery('')
     setSeriesQuery('')
+    setBooks([])
+    setResultCount(null)
+    setPage(0)
+    setHasSearched(false)
     setSubmittedSearch(initialSearch)
   }
 
@@ -274,10 +306,24 @@ function App() {
       <section className="results-section" aria-live="polite">
         <div className="results-header">
           <h2>検索結果</h2>
-          <span>{isLoading ? '読み込み中' : `${books.length}件`}</span>
+          <span>
+            {!hasSearched || resultCount === null
+              ? '-'
+              : `${resultCount}件中 ${resultStart}-${resultEnd}件`}
+          </span>
         </div>
 
-        {errorMessage ? (
+        {!hasSearched ? (
+          <div className="empty-state">
+            <h3>検索条件を入力してください</h3>
+            <p>書名・著者名、または詳細な検索から蔵書を探せます。</p>
+          </div>
+        ) : !hasSearchCondition(submittedSearch) ? (
+          <div className="empty-state">
+            <h3>検索条件が空です</h3>
+            <p>少なくとも1つの条件を入力して検索してください。</p>
+          </div>
+        ) : errorMessage ? (
           <div className="empty-state error-state">
             <h3>データを取得できませんでした</h3>
             <p>{errorMessage}</p>
@@ -288,39 +334,62 @@ function App() {
             <p>Supabase から蔵書データを取得しています。</p>
           </div>
         ) : books.length > 0 ? (
-          <div className="results-list">
-            {books.map((book) => (
-              <article className="book-item" key={book.id}>
-                <div className="book-main">
-                  <div>
-                    <h3>{book.title}</h3>
-                    <p>
-                      {book.author}
-                      {book.translator ? ` / 訳: ${book.translator}` : ''}
-                    </p>
+          <>
+            <div className="results-list">
+              {books.map((book) => (
+                <article className="book-item" key={book.id}>
+                  <div className="book-main">
+                    <div>
+                      <h3>{book.title}</h3>
+                      <p>
+                        {book.author}
+                        {book.translator ? ` / 訳: ${book.translator}` : ''}
+                      </p>
+                    </div>
                   </div>
-                </div>
-                <dl className="book-meta">
-                  <div>
-                    <dt>出版社</dt>
-                    <dd>{displayValue(book.publisher)}</dd>
-                  </div>
-                  <div>
-                    <dt>刊行年</dt>
-                    <dd>{displayValue(book.publication_year)}</dd>
-                  </div>
-                  <div>
-                    <dt>シリーズ</dt>
-                    <dd>{displayValue(book.series)}</dd>
-                  </div>
-                  <div>
-                    <dt>ISBN</dt>
-                    <dd>{displayValue(book.isbn)}</dd>
-                  </div>
-                </dl>
-              </article>
-            ))}
-          </div>
+                  <dl className="book-meta">
+                    <div>
+                      <dt>出版社</dt>
+                      <dd>{displayValue(book.publisher)}</dd>
+                    </div>
+                    <div>
+                      <dt>刊行年</dt>
+                      <dd>{displayValue(book.publication_year)}</dd>
+                    </div>
+                    <div>
+                      <dt>シリーズ</dt>
+                      <dd>{displayValue(book.series)}</dd>
+                    </div>
+                    <div>
+                      <dt>ISBN</dt>
+                      <dd>{displayValue(book.isbn)}</dd>
+                    </div>
+                  </dl>
+                </article>
+              ))}
+            </div>
+            <nav className="pagination" aria-label="検索結果のページ">
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={isFirstPage}
+                onClick={() => setPage((currentPage) => currentPage - 1)}
+              >
+                前へ
+              </button>
+              <span>
+                {page + 1} / {Math.max(1, Math.ceil((resultCount ?? 0) / pageSize))}
+              </span>
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={!hasNextPage}
+                onClick={() => setPage((currentPage) => currentPage + 1)}
+              >
+                次へ
+              </button>
+            </nav>
+          </>
         ) : (
           <div className="empty-state">
             <h3>該当する蔵書がありません</h3>
